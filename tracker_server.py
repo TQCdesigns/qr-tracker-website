@@ -159,12 +159,24 @@ def selected_slug_from_request() -> str:
     return value
 
 
-def filtered_rows(rows: list[dict], user: str, business: str, campaign: str = "", slug: str = "") -> list[dict]:
+def selected_token_from_request() -> str:
+    return clean(request.args.get("token"))
+
+
+def filtered_rows(rows: list[dict], user: str, business: str, campaign: str = "", slug: str = "", token: str = "") -> list[dict]:
     user_l = clean(user).lower()
     business_l = clean(business).lower()
     campaign_l = clean(campaign).lower()
     slug_l = clean(slug).lower()
+    token_l = clean(token).lower()
 
+    # The token is treated like a private password. Dashboards/APIs should not
+    # expose user/business data unless the matching token is supplied.
+    if (user_l or business_l) and not token_l:
+        return []
+
+    if token_l:
+        rows = [r for r in rows if clean(r.get("token")).lower() == token_l]
     if user_l:
         rows = [r for r in rows if clean(r.get("user")).lower() == user_l]
     if business_l:
@@ -176,12 +188,12 @@ def filtered_rows(rows: list[dict], user: str, business: str, campaign: str = ""
     return rows
 
 
-def filtered_scans(user: str, business: str, campaign: str = "", slug: str = "") -> list[dict]:
-    return filtered_rows(load_scans(), user, business, campaign, slug)
+def filtered_scans(user: str, business: str, campaign: str = "", slug: str = "", token: str = "") -> list[dict]:
+    return filtered_rows(load_scans(), user, business, campaign, slug, token)
 
 
-def filtered_conversions(user: str, business: str, campaign: str = "", slug: str = "") -> list[dict]:
-    return filtered_rows(load_conversions(), user, business, campaign, slug)
+def filtered_conversions(user: str, business: str, campaign: str = "", slug: str = "", token: str = "") -> list[dict]:
+    return filtered_rows(load_conversions(), user, business, campaign, slug, token)
 
 
 def count_by(rows: list[dict], key: str, fallback: str = "uncategorised") -> list[tuple[str, int]]:
@@ -213,25 +225,25 @@ def json_for_js(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def available_campaigns(user: str = "", business: str = "") -> list[str]:
-    rows = filtered_rows(load_scans(), user, business)
+def available_campaigns(user: str = "", business: str = "", token: str = "") -> list[str]:
+    rows = filtered_rows(load_scans(), user, business, token=token)
     names = sorted({clean(r.get("campaign"), "default") for r in rows if clean(r.get("campaign"), "default")})
     if "default" not in names:
         names.insert(0, "default")
     return names
 
 
-def available_slugs(user: str = "", business: str = "", campaign: str = "") -> list[str]:
-    rows = filtered_rows(load_scans(), user, business, campaign)
+def available_slugs(user: str = "", business: str = "", campaign: str = "", token: str = "") -> list[str]:
+    rows = filtered_rows(load_scans(), user, business, campaign, token=token)
     names = sorted({clean(r.get("slug"), "default") for r in rows if clean(r.get("slug"), "default")})
     if "default" not in names:
         names.insert(0, "default")
     return names
 
 
-def qr_summary_rows(user: str = "", business: str = "", campaign: str = "") -> list[dict]:
-    scans = filtered_scans(user, business, campaign)
-    conversions = filtered_conversions(user, business, campaign)
+def qr_summary_rows(user: str = "", business: str = "", campaign: str = "", token: str = "") -> list[dict]:
+    scans = filtered_scans(user, business, campaign, token=token)
+    conversions = filtered_conversions(user, business, campaign, token=token)
     conv_by_slug = Counter(clean(c.get("slug"), "default") for c in conversions)
     grouped: dict[str, dict] = {}
     for scan in scans:
@@ -311,7 +323,7 @@ def qr_track_health():
     return jsonify({
         "status": "ok",
         "tracking": True,
-        "version": "4.3",
+        "version": "4.4-token-sync",
         "features": [
             "user filtering",
             "business filtering",
@@ -330,6 +342,8 @@ def qr_track_health():
             "device detection",
             "browser detection",
             "csv export",
+            "creator token filtering",
+            "private QR library sync",
         ],
     })
 
@@ -353,6 +367,7 @@ def qr_track():
         "timestamp": now_iso(),
         "user": clean(request.args.get("user"), "unknown"),
         "business": clean(request.args.get("business"), "unknown"),
+        "token": clean(request.args.get("token")),
         "slug": clean(request.args.get("slug"), "default"),
         "campaign": clean(request.args.get("campaign"), "default"),
         "source": clean(request.args.get("source"), "qr"),
@@ -384,6 +399,7 @@ def conversion():
         "timestamp": now_iso(),
         "user": clean(request.args.get("user"), "unknown"),
         "business": clean(request.args.get("business"), "unknown"),
+        "token": clean(request.args.get("token")),
         "slug": clean(request.args.get("slug"), "default"),
         "campaign": clean(request.args.get("campaign"), "default"),
         "source": clean(request.args.get("source"), "qr"),
@@ -407,7 +423,8 @@ def api_scans():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug)
+    token = selected_token_from_request()
+    scans = filtered_scans(user, business, campaign, slug, token)
     return jsonify({"count": len(scans), "scans": scans})
 
 
@@ -415,7 +432,8 @@ def api_scans():
 def api_campaigns():
     user = clean(request.args.get("user"))
     business = clean(request.args.get("business"))
-    campaigns = available_campaigns(user, business)
+    token = selected_token_from_request()
+    campaigns = available_campaigns(user, business, token)
     return jsonify({"campaigns": campaigns, "count": len(campaigns)})
 
 
@@ -424,7 +442,8 @@ def api_qrs():
     user = clean(request.args.get("user"))
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
-    rows = qr_summary_rows(user, business, campaign)
+    token = selected_token_from_request()
+    rows = qr_summary_rows(user, business, campaign, token)
     return jsonify({"count": len(rows), "qrs": rows})
 
 
@@ -434,8 +453,9 @@ def api_summary():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug)
-    conversions = filtered_conversions(user, business, campaign, slug)
+    token = selected_token_from_request()
+    scans = filtered_scans(user, business, campaign, slug, token)
+    conversions = filtered_conversions(user, business, campaign, slug, token)
 
     by_day = count_by_day(scans)
     by_campaign = dict(count_by(scans, "campaign", "default"))
@@ -454,8 +474,8 @@ def api_summary():
         "conversion_rate": conversion_rate(len(scans), len(conversions)),
         "selected_campaign": campaign or "All Campaigns",
         "selected_slug": slug or "All QR Codes",
-        "available_campaigns": available_campaigns(user, business),
-        "available_qr_codes": available_slugs(user, business, campaign),
+        "available_campaigns": available_campaigns(user, business, selected_token_from_request()),
+        "available_qr_codes": available_slugs(user, business, campaign, selected_token_from_request()),
         "by_day": by_day,
         "by_campaign": by_campaign,
         "by_source": by_source,
@@ -467,7 +487,7 @@ def api_summary():
         "by_city": by_city,
         "by_variant": by_variant,
         "heatmap_points": heatmap_points(scans),
-        "qr_codes": qr_summary_rows(user, business, campaign),
+        "qr_codes": qr_summary_rows(user, business, campaign, selected_token_from_request()),
         "campaign_performance": campaign_scores(filtered_scans(user, business)),
         "insights": {
             "best_campaign": max(by_campaign, key=by_campaign.get) if by_campaign else None,
@@ -485,7 +505,7 @@ def export_csv():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug)
+    scans = filtered_scans(user, business, campaign, slug, selected_token_from_request())
 
     fields = [
         "timestamp", "user", "business", "campaign", "source", "medium", "variant",
@@ -601,8 +621,8 @@ BASE_CSS = """
 """
 
 
-def campaign_dropdown(user: str, business: str, selected: str = "") -> str:
-    campaigns = available_campaigns(user, business)
+def campaign_dropdown(user: str, business: str, selected: str = "", token: str = "") -> str:
+    campaigns = available_campaigns(user, business, token)
     options = ['<option value="">All Campaigns</option>']
     for campaign in campaigns:
         selected_attr = "selected" if campaign == selected else ""
@@ -610,8 +630,8 @@ def campaign_dropdown(user: str, business: str, selected: str = "") -> str:
     return "\n".join(options)
 
 
-def slug_dropdown(user: str, business: str, campaign: str = "", selected: str = "") -> str:
-    slugs = available_slugs(user, business, campaign)
+def slug_dropdown(user: str, business: str, campaign: str = "", selected: str = "", token: str = "") -> str:
+    slugs = available_slugs(user, business, campaign, token)
     options = ['<option value="">All QR Codes</option>']
     for slug in slugs:
         selected_attr = "selected" if slug == selected else ""
@@ -619,22 +639,23 @@ def slug_dropdown(user: str, business: str, campaign: str = "", selected: str = 
     return "\n".join(options)
 
 
-def filter_form(user: str, business: str, action: str, campaign: str = "", slug: str = "") -> str:
-    export_url = f"/export.csv?user={quote_plus(user)}&business={quote_plus(business)}&campaign={quote_plus(campaign)}&slug={quote_plus(slug)}"
+def filter_form(user: str, business: str, action: str, campaign: str = "", slug: str = "", token: str = "") -> str:
+    export_url = f"/export.csv?user={quote_plus(user)}&business={quote_plus(business)}&token={quote_plus(token)}&campaign={quote_plus(campaign)}&slug={quote_plus(slug)}"
     return f"""
     <form method="get" action="{action}">
         <input name="user" placeholder="Name" value="{safe(user)}">
         <input name="business" placeholder="Business name" value="{safe(business)}">
-        <select name="campaign">{campaign_dropdown(user, business, campaign)}</select>
-        <select name="slug">{slug_dropdown(user, business, campaign, slug)}</select>
+        <input name="token" placeholder="Private token" value="{safe(token)}">
+        <select name="campaign">{campaign_dropdown(user, business, campaign, token)}</select>
+        <select name="slug">{slug_dropdown(user, business, campaign, slug, token)}</select>
         <button type="submit">View Stats</button>
         <a class="btn" href="{export_url}">Export CSV</a>
     </form>
     """
 
 
-def nav_links(user: str, business: str, campaign: str, slug: str, active: str) -> str:
-    q = f"user={quote_plus(user)}&business={quote_plus(business)}&campaign={quote_plus(campaign)}&slug={quote_plus(slug)}"
+def nav_links(user: str, business: str, campaign: str, slug: str, active: str, token: str = "") -> str:
+    q = f"user={quote_plus(user)}&business={quote_plus(business)}&token={quote_plus(token)}&campaign={quote_plus(campaign)}&slug={quote_plus(slug)}"
     return f"""
     <div class="nav">
         <a class="{'active' if active == 'dashboard' else ''}" href="/dashboard?{q}">Dashboard</a>
@@ -668,10 +689,11 @@ def dashboard():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
+    token = selected_token_from_request()
 
-    scans = filtered_scans(user, business, campaign, slug)
-    conversions = filtered_conversions(user, business, campaign, slug)
-    all_scans_for_campaigns = filtered_scans(user, business)
+    scans = filtered_scans(user, business, campaign, slug, token)
+    conversions = filtered_conversions(user, business, campaign, slug, token)
+    all_scans_for_campaigns = filtered_scans(user, business, token=token)
 
     campaign_rows = count_by(all_scans_for_campaigns, "campaign", "default")
     source_rows = count_by(scans, "source", "qr")
@@ -717,7 +739,7 @@ def dashboard():
 </div>
 </body>
 </html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/dashboard", campaign, slug), nav=nav_links(user, business, campaign, slug, "dashboard"), stats=stats_block(total, len(conversions), conversion_rate(total, len(conversions)), len(campaign_rows), len(slug_rows)), selected_label=selected_label, scans=scans, variant_rows=variant_rows, source_rows=source_rows, city_rows=city_rows, scores=scores, best_campaign=best_campaign, best_source=best_source, best_qr=best_qr, best_city=best_city)
+    """, css=BASE_CSS, form=filter_form(user, business, "/dashboard", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "dashboard", token), stats=stats_block(total, len(conversions), conversion_rate(total, len(conversions)), len(campaign_rows), len(slug_rows)), selected_label=selected_label, scans=scans, variant_rows=variant_rows, source_rows=source_rows, city_rows=city_rows, scores=scores, best_campaign=best_campaign, best_source=best_source, best_qr=best_qr, best_city=best_city)
 
 
 @app.get("/qrs")
@@ -726,11 +748,12 @@ def qrs_page():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    qrs = qr_summary_rows(user, business, campaign)
+    token = selected_token_from_request()
+    qrs = qr_summary_rows(user, business, campaign, token)
     if slug:
         qrs = [q for q in qrs if clean(q.get("slug"), "default").lower() == slug.lower()]
-    scans = filtered_scans(user, business, campaign, slug)
-    conversions = filtered_conversions(user, business, campaign, slug)
+    scans = filtered_scans(user, business, campaign, slug, token)
+    conversions = filtered_conversions(user, business, campaign, slug, token)
     return render_template_string("""
 <!doctype html>
 <html>
@@ -759,7 +782,7 @@ def qrs_page():
 </div>
 </body>
 </html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/qrs", campaign, slug), nav=nav_links(user, business, campaign, slug, "qrs"), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(count_by(filtered_scans(user, business), "campaign", "default")), len(qrs)), qrs=[{**q, "slug_q": quote_plus(q["slug"]), "campaign_q": quote_plus(q["campaign"])} for q in qrs], user_q=quote_plus(user), business_q=quote_plus(business))
+    """, css=BASE_CSS, form=filter_form(user, business, "/qrs", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "qrs", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(count_by(filtered_scans(user, business), "campaign", "default")), len(qrs)), qrs=[{**q, "slug_q": quote_plus(q["slug"]), "campaign_q": quote_plus(q["campaign"])} for q in qrs], user_q=quote_plus(user), business_q=quote_plus(business))
 
 
 @app.get("/analytics")
@@ -768,8 +791,8 @@ def analytics():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug)
-    conversions = filtered_conversions(user, business, campaign, slug)
+    scans = filtered_scans(user, business, campaign, slug, selected_token_from_request())
+    conversions = filtered_conversions(user, business, campaign, slug, selected_token_from_request())
 
     return render_template_string("""
 <!doctype html>
@@ -783,7 +806,7 @@ function sortedData(obj, limit=12){return Object.entries(obj).sort((a,b)=>b[1]-a
 function makeChart(id,type,title,obj,limit=12){let rows=type==='line'?Object.entries(obj):sortedData(obj,limit);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label:title,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{responsive:true,plugins:{legend:{display:type!=='bar'&&type!=='line'}},scales:type==='pie'||type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}
 makeChart('timeChart','line','Scans',byDay);makeChart('conversionChart','line','Conversions',byConversionDay);makeChart('campaignChart','bar','Campaigns',byCampaign);makeChart('slugChart','bar','QR Codes',bySlug);makeChart('variantChart','bar','Variants',byVariant);makeChart('sourceChart','doughnut','Sources',bySource);makeChart('cityChart','bar','Cities',byCity);makeChart('countryChart','doughnut','Countries',byCountry);makeChart('deviceChart','pie','Devices',byDevice);makeChart('browserChart','doughnut','Browsers',byBrowser);
 </script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/analytics", campaign, slug), nav=nav_links(user, business, campaign, slug, "analytics"), by_day=json_for_js(count_by_day(scans)), by_conversion_day=json_for_js(count_by_day(conversions)), by_campaign=json_for_js(dict(count_by(filtered_scans(user, business), "campaign", "default"))), by_source=json_for_js(dict(count_by(scans, "source", "qr"))), by_slug=json_for_js(dict(count_by(scans, "slug", "default"))), by_device=json_for_js(dict(count_by(scans, "device", "Unknown"))), by_browser=json_for_js(dict(count_by(scans, "browser", "Unknown"))), by_city=json_for_js(dict(count_by(scans, "city", "Unknown"))), by_country=json_for_js(dict(count_by(scans, "country", "Unknown"))), by_variant=json_for_js(dict(count_by(scans, "variant", "A"))))
+    """, css=BASE_CSS, form=filter_form(user, business, "/analytics", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "analytics", selected_token_from_request()), by_day=json_for_js(count_by_day(scans)), by_conversion_day=json_for_js(count_by_day(conversions)), by_campaign=json_for_js(dict(count_by(filtered_scans(user, business), "campaign", "default"))), by_source=json_for_js(dict(count_by(scans, "source", "qr"))), by_slug=json_for_js(dict(count_by(scans, "slug", "default"))), by_device=json_for_js(dict(count_by(scans, "device", "Unknown"))), by_browser=json_for_js(dict(count_by(scans, "browser", "Unknown"))), by_city=json_for_js(dict(count_by(scans, "city", "Unknown"))), by_country=json_for_js(dict(count_by(scans, "country", "Unknown"))), by_variant=json_for_js(dict(count_by(scans, "variant", "A"))))
 
 
 @app.get("/campaigns")
@@ -793,8 +816,8 @@ def campaigns_page():
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
     all_scans = filtered_scans(user, business)
-    scans = filtered_scans(user, business, campaign, slug)
-    conversions = filtered_conversions(user, business, campaign, slug)
+    scans = filtered_scans(user, business, campaign, slug, selected_token_from_request())
+    conversions = filtered_conversions(user, business, campaign, slug, selected_token_from_request())
     rows = count_by(all_scans, "campaign", "default")
     campaign_table = []
     for name, count in rows:
@@ -804,8 +827,8 @@ def campaigns_page():
 
     return render_template_string("""
 <!doctype html>
-<html><head><title>Campaign Analytics</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Campaign Analytics</h1><p class="muted">Compare campaign groups like Melbourne, Sydney, flyer drops, events and poster runs.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>Campaign Scan Share</h2><canvas id="campaignShare"></canvas></div><div class="card"><h2>Selected Campaign Over Time</h2><canvas id="campaignTime"></canvas></div></div><div class="card"><h2>Campaign Table</h2><table><tr><th>Campaign</th><th>Scans</th><th>QR Codes</th><th>Conversions</th><th>Conversion Rate</th><th>Open</th></tr>{% for row in campaign_table %}<tr><td>{{ row.name }}</td><td>{{ row.count }}</td><td>{{ row.qrs }}</td><td>{{ row.conversions }}</td><td>{{ row.rate }}%</td><td><a class="pill" href="/campaigns?user={{ user_q }}&business={{ business_q }}&campaign={{ row.name_q }}">View</a></td></tr>{% else %}<tr><td colspan="6" class="muted">No campaigns yet.</td></tr>{% endfor %}</table></div></div><script>const allCampaigns={{ by_campaign|safe }}, selectedTime={{ by_day|safe }};function sortedData(obj,limit=16){return Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,limit)}function chart(id,type,label,obj){const rows=type==='line'?Object.entries(obj):sortedData(obj);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{scales:type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}chart('campaignShare','doughnut','Campaigns',allCampaigns);chart('campaignTime','line','Scans',selectedTime);</script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/campaigns", campaign, slug), nav=nav_links(user, business, campaign, slug, "campaigns"), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(rows), len(count_by(scans, "slug", "default"))), campaign_table=[{**r, "name_q": quote_plus(r["name"])} for r in campaign_table], user_q=quote_plus(user), business_q=quote_plus(business), by_campaign=json_for_js(dict(rows)), by_day=json_for_js(count_by_day(scans)))
+<html><head><title>Campaign Analytics</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Campaign Analytics</h1><p class="muted">Compare campaign groups like Melbourne, Sydney, flyer drops, events and poster runs.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>Campaign Scan Share</h2><canvas id="campaignShare"></canvas></div><div class="card"><h2>Selected Campaign Over Time</h2><canvas id="campaignTime"></canvas></div></div><div class="card"><h2>Campaign Table</h2><table><tr><th>Campaign</th><th>Scans</th><th>QR Codes</th><th>Conversions</th><th>Conversion Rate</th><th>Open</th></tr>{% for row in campaign_table %}<tr><td>{{ row.name }}</td><td>{{ row.count }}</td><td>{{ row.qrs }}</td><td>{{ row.conversions }}</td><td>{{ row.rate }}%</td><td><a class="pill" href="/campaigns?user={{ user_q }}&business={{ business_q }}&token={{ token_q }}&campaign={{ row.name_q }}">View</a></td></tr>{% else %}<tr><td colspan="6" class="muted">No campaigns yet.</td></tr>{% endfor %}</table></div></div><script>const allCampaigns={{ by_campaign|safe }}, selectedTime={{ by_day|safe }};function sortedData(obj,limit=16){return Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,limit)}function chart(id,type,label,obj){const rows=type==='line'?Object.entries(obj):sortedData(obj);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{scales:type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}chart('campaignShare','doughnut','Campaigns',allCampaigns);chart('campaignTime','line','Scans',selectedTime);</script></body></html>
+    """, css=BASE_CSS, form=filter_form(user, business, "/campaigns", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "campaigns", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(rows), len(count_by(scans, "slug", "default"))), campaign_table=[{**r, "name_q": quote_plus(r["name"])} for r in campaign_table], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(selected_token_from_request()), by_campaign=json_for_js(dict(rows)), by_day=json_for_js(count_by_day(scans)))
 
 
 @app.get("/heatmap")
@@ -814,8 +837,8 @@ def heatmap_page():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug)
-    conversions = filtered_conversions(user, business, campaign, slug)
+    scans = filtered_scans(user, business, campaign, slug, selected_token_from_request())
+    conversions = filtered_conversions(user, business, campaign, slug, selected_token_from_request())
     points = heatmap_points(scans)
     top = points[:12]
     map_query = "Australia"
@@ -826,7 +849,7 @@ def heatmap_page():
     return render_template_string("""
 <!doctype html>
 <html><head><title>Scan Heatmap</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Scan Heatmap</h1><p class="muted">Location-based scan grouping by city, region and country. IP locations are approximate.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>City Heat Chart</h2><canvas id="cityHeat"></canvas></div><div class="card"><h2>Map Preview</h2><div class="map-frame"><iframe loading="lazy" src="https://maps.google.com/maps?q={{ map_query }}&output=embed"></iframe></div></div></div><div class="card"><h2>Top Location Heat Cells</h2><div class="heatmap-grid">{% for p in top %}<div class="heat-cell"><strong>{{ p.count }}</strong><span class="muted">{{ p.city }}{% if p.region %}, {{ p.region }}{% endif %}<br>{{ p.country }}</span></div>{% else %}<p class="muted">No location data yet.</p>{% endfor %}</div></div></div><script>const points={{ points|safe }};const cityCounts={};points.forEach(p=>{cityCounts[`${p.city}, ${p.country}`]=p.count});const rows=Object.entries(cityCounts).sort((a,b)=>b[1]-a[1]).slice(0,16);new Chart(document.getElementById('cityHeat'),{type:'bar',data:{labels:rows.map(x=>x[0]),datasets:[{label:'Scans',data:rows.map(x=>x[1]),borderWidth:2}]},options:{indexAxis:'y',scales:{x:{beginAtZero:true,ticks:{precision:0}}}}});</script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/heatmap", campaign, slug), nav=nav_links(user, business, campaign, slug, "heatmap"), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(count_by(filtered_scans(user, business), "campaign", "default")), len(count_by(scans, "slug", "default"))), top=top, points=json_for_js(points), map_query=quote_plus(map_query))
+    """, css=BASE_CSS, form=filter_form(user, business, "/heatmap", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "heatmap", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(count_by(filtered_scans(user, business), "campaign", "default")), len(count_by(scans, "slug", "default"))), top=top, points=json_for_js(points), map_query=quote_plus(map_query))
 
 
 if __name__ == "__main__":
