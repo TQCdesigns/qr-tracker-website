@@ -10,9 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, quote_plus
 
-from flask import Flask, request, redirect, jsonify, render_template_string, Response
+from flask import Flask, request, redirect, jsonify, render_template_string, Response, send_file
 
 app = Flask(__name__)
+
+APP_DIR = Path(__file__).resolve().parent
+LOGO_FILE = APP_DIR / "QRLogo.png"
 
 DATA_DIR = Path(os.environ.get("QR_TRACKER_DATA_DIR", "tracker_data"))
 DATA_DIR.mkdir(exist_ok=True)
@@ -469,6 +472,33 @@ def heatmap_points(scans: list[dict]) -> list[dict]:
 
 
 # -----------------------------
+# Branding assets
+# -----------------------------
+@app.get("/QRLogo.png")
+def qr_mode_logo():
+    """Serve the QR Mode logo from the same folder as tracker.py."""
+    if LOGO_FILE.exists():
+        return send_file(LOGO_FILE)
+    return Response(status=404)
+
+
+def brand_block(section: str = "") -> str:
+    section_html = f'<div class="brand-subtitle">{safe(section)}</div>' if section else ""
+    return f"""
+    <div class="brandbar">
+        <div class="brand-logo">
+            <img src="/QRLogo.png" alt="QR Mode logo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+            <span>QM</span>
+        </div>
+        <div>
+            <div class="brand-name"><span class="gradient-text">QR</span> Mode</div>
+            {section_html}
+        </div>
+    </div>
+    """
+
+
+# -----------------------------
 # Tracking routes
 # -----------------------------
 @app.get("/")
@@ -485,16 +515,19 @@ def render_home_page(message: str = "", active: str = "home"):
 <!doctype html>
 <html>
 <head>
-    <title>QR Studio Pro Tracker</title>
+    <title>QR Mode Tracker</title>
     {{ css | safe }}
 </head>
 <body>
 <div class="setup-page">
     <div class="setup-shell">
-        <div class="setup-logo">✕</div>
-        <p class="setup-eyebrow">QR STUDIO PRO TRACKER</p>
+        <div class="setup-logo">
+            <img src="/QRLogo.png" alt="QR Mode logo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+            <span>QM</span>
+        </div>
+        <p class="setup-eyebrow"><span class="gradient-text">QR</span> MODE TRACKER</p>
         <h1>Open your private QR dashboard</h1>
-        <p class="setup-subtitle">Enter the same name, business name and private token from QR Studio Pro. These details keep each creator's scans, campaigns, QR codes and exports separated.</p>
+        <p class="setup-subtitle">Enter the same name, business name and private token from QR Mode. These details keep each creator's scans, campaigns, QR codes and exports separated.</p>
 
         {% if message %}
             <div class="setup-message">{{ message }}</div>
@@ -508,7 +541,7 @@ def render_home_page(message: str = "", active: str = "home"):
             <input name="business" placeholder="Business name" value="{{ business }}" required>
 
             <label>Private creator token *</label>
-            <input name="token" placeholder="Paste your QR Studio token" value="{{ token }}" required>
+            <input name="token" placeholder="Paste your QR Mode token" value="{{ token }}" required>
 
             <button type="submit">Open Dashboard →</button>
 
@@ -522,7 +555,7 @@ def render_home_page(message: str = "", active: str = "home"):
         <div class="setup-help-grid">
             <div>
                 <strong>Where do I find the token?</strong>
-                <p>Open QR Studio Pro, go to the first setup page, then generate or export your private creator token.</p>
+                <p>Open QR Mode, go to the first setup page, then generate or export your private creator token.</p>
             </div>
             <div>
                 <strong>Why is it required?</strong>
@@ -545,7 +578,7 @@ def qr_track_health():
     return jsonify({
         "status": "ok",
         "tracking": True,
-        "version": "4.5-saved-qr-registry",
+        "version": "4.6-qr-mode-branding",
         "features": [
             "user filtering",
             "business filtering",
@@ -893,6 +926,60 @@ BASE_CSS = """
         --teal: #0891b2;
         --card: rgba(255,255,255,.84);
     }
+
+    .gradient-text {
+        background: linear-gradient(135deg, var(--cyan), var(--blue), var(--purple));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+    .brandbar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 14px;
+    }
+    .brand-logo {
+        width: 58px;
+        height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 58px;
+    }
+    .brand-logo img {
+        width: 54px;
+        height: 54px;
+        object-fit: contain;
+        display: block;
+    }
+    .brand-logo span {
+        width: 54px;
+        height: 54px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 18px;
+        color: #fff;
+        font-size: 19px;
+        font-weight: 950;
+        background: linear-gradient(135deg, var(--cyan), var(--blue), var(--purple));
+    }
+    .brand-name {
+        font-size: 30px;
+        line-height: 1;
+        letter-spacing: -0.7px;
+        font-weight: 950;
+        color: var(--ink);
+    }
+    .brand-subtitle {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 850;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+    }
     body {
         margin: 0;
         font-family: Segoe UI, Arial, sans-serif;
@@ -982,18 +1069,31 @@ BASE_CSS = """
         text-align: center;
     }
     .setup-logo {
-        width: 64px;
-        height: 64px;
-        border-radius: 24px;
+        width: 86px;
+        height: 86px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        color: white;
-        font-size: 34px;
-        font-weight: 950;
-        background: linear-gradient(135deg, var(--cyan), var(--purple));
-        box-shadow: 0 18px 42px rgba(34,211,238,.30);
         margin-bottom: 14px;
+    }
+    .setup-logo img {
+        width: 82px;
+        height: 82px;
+        object-fit: contain;
+        display: block;
+    }
+    .setup-logo span {
+        width: 70px;
+        height: 70px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 24px;
+        color: white;
+        font-size: 25px;
+        font-weight: 950;
+        background: linear-gradient(135deg, var(--cyan), var(--blue), var(--purple));
+        box-shadow: 0 18px 42px rgba(34,211,238,.30);
     }
     .setup-eyebrow {
         margin: 0 0 8px;
@@ -1172,14 +1272,14 @@ def dashboard():
 <!doctype html>
 <html>
 <head>
-    <title>QR Tracker Dashboard</title>
+    <title>QR Mode Tracker Dashboard</title>
     <meta http-equiv="refresh" content="30">
     {{ css | safe }}
 </head>
 <body>
 <div class="wrap">
     <div class="hero">
-        <div class="top"><div><h1>QR Tracker Dashboard</h1><p class="muted">Live QR scans, campaign performance, A/B variants, devices and locations.</p></div><span class="pill">{{ selected_label }}</span></div>
+        <div class="top"><div>{{ brand | safe }}<p class="muted">Live QR scans, campaign performance, A/B variants, devices and locations.</p></div><span class="pill">{{ selected_label }}</span></div>
         {{ form | safe }}
         {{ nav | safe }}
     </div>
@@ -1198,7 +1298,7 @@ def dashboard():
 </div>
 </body>
 </html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/dashboard", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "dashboard", token), stats=stats_block(total, len(conversions), conversion_rate(total, len(conversions)), len(available_campaigns(user, business, token)), len(available_slugs(user, business, campaign, token))), selected_label=selected_label, scans=scans, variant_rows=variant_rows, source_rows=source_rows, city_rows=city_rows, scores=scores, best_campaign=best_campaign, best_source=best_source, best_qr=best_qr, best_city=best_city)
+    """, css=BASE_CSS, brand=brand_block("Tracker Dashboard"), form=filter_form(user, business, "/dashboard", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "dashboard", token), stats=stats_block(total, len(conversions), conversion_rate(total, len(conversions)), len(available_campaigns(user, business, token)), len(available_slugs(user, business, campaign, token))), selected_label=selected_label, scans=scans, variant_rows=variant_rows, source_rows=source_rows, city_rows=city_rows, scores=scores, best_campaign=best_campaign, best_source=best_source, best_qr=best_qr, best_city=best_city)
 
 
 @app.get("/qrs")
@@ -1222,7 +1322,7 @@ def qrs_page():
 <head><title>Saved QR Codes</title>{{ css | safe }}</head>
 <body>
 <div class="wrap">
-    <div class="hero"><h1>Saved QR Codes</h1><p class="muted">A clean view of saved and tracked QR codes. Saved QR codes can appear here before their first scan.</p>{{ form | safe }}{{ nav | safe }}</div>
+    <div class="hero">{{ brand | safe }}<p class="muted">A clean view of saved and tracked QR codes. Saved QR codes can appear here before their first scan.</p>{{ form | safe }}{{ nav | safe }}</div>
     {{ stats | safe }}
     <div class="qr-card-grid">
     {% for qr in qrs %}
@@ -1238,13 +1338,13 @@ def qrs_page():
             </div>
         </div>
     {% else %}
-        <div class="card"><p class="muted">No saved QR codes or scans have been registered yet. Save a QR from QR Studio Pro or scan a tracked QR to show it here.</p></div>
+        <div class="card"><p class="muted">No saved QR codes or scans have been registered yet. Save a QR from QR Mode or scan a tracked QR to show it here.</p></div>
     {% endfor %}
     </div>
 </div>
 </body>
 </html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/qrs", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "qrs", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(available_campaigns(user, business, token)), len(qrs)), qrs=[{**q, "slug_q": quote_plus(q["slug"]), "campaign_q": quote_plus(q["campaign"])} for q in qrs], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(token))
+    """, css=BASE_CSS, brand=brand_block("Saved QR Codes"), form=filter_form(user, business, "/qrs", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "qrs", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(available_campaigns(user, business, token)), len(qrs)), qrs=[{**q, "slug_q": quote_plus(q["slug"]), "campaign_q": quote_plus(q["campaign"])} for q in qrs], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(token))
 
 
 @app.get("/analytics")
@@ -1263,8 +1363,8 @@ def analytics():
     return render_template_string("""
 <!doctype html>
 <html>
-<head><title>QR Tracker Analytics</title><meta http-equiv="refresh" content="45">{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head>
-<body><div class="wrap"><div class="hero"><h1>Advanced Analytics</h1><p class="muted">Live charts for scans, campaigns, QR codes, A/B variants, conversions, locations, devices and browsers.</p>{{ form | safe }}{{ nav | safe }}</div>
+<head><title>QR Mode Tracker Analytics</title><meta http-equiv="refresh" content="45">{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head>
+<body><div class="wrap"><div class="hero">{{ brand | safe }}<p class="muted">Live charts for scans, campaigns, QR codes, A/B variants, conversions, locations, devices and browsers.</p>{{ form | safe }}{{ nav | safe }}</div>
 <div class="grid2"><div class="card"><h2>Scans Over Time</h2><canvas id="timeChart"></canvas></div><div class="card"><h2>Conversions Over Time</h2><canvas id="conversionChart"></canvas></div><div class="card"><h2>Campaign Performance</h2><canvas id="campaignChart"></canvas></div><div class="card"><h2>QR Code Performance</h2><canvas id="slugChart"></canvas></div><div class="card"><h2>A/B Variants</h2><canvas id="variantChart"></canvas></div><div class="card"><h2>Source Breakdown</h2><canvas id="sourceChart"></canvas></div><div class="card"><h2>Top Cities</h2><canvas id="cityChart"></canvas></div><div class="card"><h2>Countries</h2><canvas id="countryChart"></canvas></div><div class="card"><h2>Device Types</h2><canvas id="deviceChart"></canvas></div><div class="card"><h2>Browsers</h2><canvas id="browserChart"></canvas></div></div></div>
 <script>
 const byDay={{ by_day|safe }}, byConversionDay={{ by_conversion_day|safe }}, byCampaign={{ by_campaign|safe }}, bySource={{ by_source|safe }}, bySlug={{ by_slug|safe }}, byDevice={{ by_device|safe }}, byBrowser={{ by_browser|safe }}, byCity={{ by_city|safe }}, byCountry={{ by_country|safe }}, byVariant={{ by_variant|safe }};
@@ -1272,7 +1372,7 @@ function sortedData(obj, limit=12){return Object.entries(obj).sort((a,b)=>b[1]-a
 function makeChart(id,type,title,obj,limit=12){let rows=type==='line'?Object.entries(obj):sortedData(obj,limit);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label:title,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{responsive:true,plugins:{legend:{display:type!=='bar'&&type!=='line'}},scales:type==='pie'||type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}
 makeChart('timeChart','line','Scans',byDay);makeChart('conversionChart','line','Conversions',byConversionDay);makeChart('campaignChart','bar','Campaigns',byCampaign);makeChart('slugChart','bar','QR Codes',bySlug);makeChart('variantChart','bar','Variants',byVariant);makeChart('sourceChart','doughnut','Sources',bySource);makeChart('cityChart','bar','Cities',byCity);makeChart('countryChart','doughnut','Countries',byCountry);makeChart('deviceChart','pie','Devices',byDevice);makeChart('browserChart','doughnut','Browsers',byBrowser);
 </script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/analytics", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "analytics", selected_token_from_request()), by_day=json_for_js(count_by_day(scans)), by_conversion_day=json_for_js(count_by_day(conversions)), by_campaign=json_for_js(dict(count_by(filtered_scans(user, business, token=selected_token_from_request()), "campaign", "default"))), by_source=json_for_js(dict(count_by(scans, "source", "qr"))), by_slug=json_for_js(dict(count_by(scans, "slug", "default"))), by_device=json_for_js(dict(count_by(scans, "device", "Unknown"))), by_browser=json_for_js(dict(count_by(scans, "browser", "Unknown"))), by_city=json_for_js(dict(count_by(scans, "city", "Unknown"))), by_country=json_for_js(dict(count_by(scans, "country", "Unknown"))), by_variant=json_for_js(dict(count_by(scans, "variant", "A"))))
+    """, css=BASE_CSS, brand=brand_block("Advanced Analytics"), form=filter_form(user, business, "/analytics", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "analytics", selected_token_from_request()), by_day=json_for_js(count_by_day(scans)), by_conversion_day=json_for_js(count_by_day(conversions)), by_campaign=json_for_js(dict(count_by(filtered_scans(user, business, token=selected_token_from_request()), "campaign", "default"))), by_source=json_for_js(dict(count_by(scans, "source", "qr"))), by_slug=json_for_js(dict(count_by(scans, "slug", "default"))), by_device=json_for_js(dict(count_by(scans, "device", "Unknown"))), by_browser=json_for_js(dict(count_by(scans, "browser", "Unknown"))), by_city=json_for_js(dict(count_by(scans, "city", "Unknown"))), by_country=json_for_js(dict(count_by(scans, "country", "Unknown"))), by_variant=json_for_js(dict(count_by(scans, "variant", "A"))))
 
 
 @app.get("/campaigns")
@@ -1298,8 +1398,8 @@ def campaigns_page():
 
     return render_template_string("""
 <!doctype html>
-<html><head><title>Campaign Analytics</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Campaign Analytics</h1><p class="muted">Compare campaign groups like Melbourne, Sydney, flyer drops, events and poster runs.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>Campaign Scan Share</h2><canvas id="campaignShare"></canvas></div><div class="card"><h2>Selected Campaign Over Time</h2><canvas id="campaignTime"></canvas></div></div><div class="card"><h2>Campaign Table</h2><table><tr><th>Campaign</th><th>Scans</th><th>QR Codes</th><th>Conversions</th><th>Conversion Rate</th><th>Open</th></tr>{% for row in campaign_table %}<tr><td>{{ row.name }}</td><td>{{ row.count }}</td><td>{{ row.qrs }}</td><td>{{ row.conversions }}</td><td>{{ row.rate }}%</td><td><a class="pill" href="/campaigns?user={{ user_q }}&business={{ business_q }}&token={{ token_q }}&campaign={{ row.name_q }}">View</a></td></tr>{% else %}<tr><td colspan="6" class="muted">No campaigns yet.</td></tr>{% endfor %}</table></div></div><script>const allCampaigns={{ by_campaign|safe }}, selectedTime={{ by_day|safe }};function sortedData(obj,limit=16){return Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,limit)}function chart(id,type,label,obj){const rows=type==='line'?Object.entries(obj):sortedData(obj);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{scales:type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}chart('campaignShare','doughnut','Campaigns',allCampaigns);chart('campaignTime','line','Scans',selectedTime);</script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/campaigns", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "campaigns", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(rows), len(available_slugs(user, business, campaign, selected_token_from_request()))), campaign_table=[{**r, "name_q": quote_plus(r["name"])} for r in campaign_table], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(selected_token_from_request()), by_campaign=json_for_js(dict(rows)), by_day=json_for_js(count_by_day(scans)))
+<html><head><title>Campaign Analytics</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero">{{ brand | safe }}<p class="muted">Compare campaign groups like Melbourne, Sydney, flyer drops, events and poster runs.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>Campaign Scan Share</h2><canvas id="campaignShare"></canvas></div><div class="card"><h2>Selected Campaign Over Time</h2><canvas id="campaignTime"></canvas></div></div><div class="card"><h2>Campaign Table</h2><table><tr><th>Campaign</th><th>Scans</th><th>QR Codes</th><th>Conversions</th><th>Conversion Rate</th><th>Open</th></tr>{% for row in campaign_table %}<tr><td>{{ row.name }}</td><td>{{ row.count }}</td><td>{{ row.qrs }}</td><td>{{ row.conversions }}</td><td>{{ row.rate }}%</td><td><a class="pill" href="/campaigns?user={{ user_q }}&business={{ business_q }}&token={{ token_q }}&campaign={{ row.name_q }}">View</a></td></tr>{% else %}<tr><td colspan="6" class="muted">No campaigns yet.</td></tr>{% endfor %}</table></div></div><script>const allCampaigns={{ by_campaign|safe }}, selectedTime={{ by_day|safe }};function sortedData(obj,limit=16){return Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,limit)}function chart(id,type,label,obj){const rows=type==='line'?Object.entries(obj):sortedData(obj);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{scales:type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}chart('campaignShare','doughnut','Campaigns',allCampaigns);chart('campaignTime','line','Scans',selectedTime);</script></body></html>
+    """, css=BASE_CSS, brand=brand_block("Campaign Analytics"), form=filter_form(user, business, "/campaigns", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "campaigns", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(rows), len(available_slugs(user, business, campaign, selected_token_from_request()))), campaign_table=[{**r, "name_q": quote_plus(r["name"])} for r in campaign_table], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(selected_token_from_request()), by_campaign=json_for_js(dict(rows)), by_day=json_for_js(count_by_day(scans)))
 
 
 @app.get("/heatmap")
@@ -1323,8 +1423,8 @@ def heatmap_page():
 
     return render_template_string("""
 <!doctype html>
-<html><head><title>Scan Heatmap</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Scan Heatmap</h1><p class="muted">Location-based scan grouping by city, region and country. IP locations are approximate.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>City Heat Chart</h2><canvas id="cityHeat"></canvas></div><div class="card"><h2>Map Preview</h2><div class="map-frame"><iframe loading="lazy" src="https://maps.google.com/maps?q={{ map_query }}&output=embed"></iframe></div></div></div><div class="card"><h2>Top Location Heat Cells</h2><div class="heatmap-grid">{% for p in top %}<div class="heat-cell"><strong>{{ p.count }}</strong><span class="muted">{{ p.city }}{% if p.region %}, {{ p.region }}{% endif %}<br>{{ p.country }}</span></div>{% else %}<p class="muted">No location data yet.</p>{% endfor %}</div></div></div><script>const points={{ points|safe }};const cityCounts={};points.forEach(p=>{cityCounts[`${p.city}, ${p.country}`]=p.count});const rows=Object.entries(cityCounts).sort((a,b)=>b[1]-a[1]).slice(0,16);new Chart(document.getElementById('cityHeat'),{type:'bar',data:{labels:rows.map(x=>x[0]),datasets:[{label:'Scans',data:rows.map(x=>x[1]),borderWidth:2}]},options:{indexAxis:'y',scales:{x:{beginAtZero:true,ticks:{precision:0}}}}});</script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/heatmap", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "heatmap", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(available_campaigns(user, business, token)), len(available_slugs(user, business, campaign, token))), top=top, points=json_for_js(points), map_query=quote_plus(map_query))
+<html><head><title>Scan Heatmap</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero">{{ brand | safe }}<p class="muted">Location-based scan grouping by city, region and country. IP locations are approximate.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>City Heat Chart</h2><canvas id="cityHeat"></canvas></div><div class="card"><h2>Map Preview</h2><div class="map-frame"><iframe loading="lazy" src="https://maps.google.com/maps?q={{ map_query }}&output=embed"></iframe></div></div></div><div class="card"><h2>Top Location Heat Cells</h2><div class="heatmap-grid">{% for p in top %}<div class="heat-cell"><strong>{{ p.count }}</strong><span class="muted">{{ p.city }}{% if p.region %}, {{ p.region }}{% endif %}<br>{{ p.country }}</span></div>{% else %}<p class="muted">No location data yet.</p>{% endfor %}</div></div></div><script>const points={{ points|safe }};const cityCounts={};points.forEach(p=>{cityCounts[`${p.city}, ${p.country}`]=p.count});const rows=Object.entries(cityCounts).sort((a,b)=>b[1]-a[1]).slice(0,16);new Chart(document.getElementById('cityHeat'),{type:'bar',data:{labels:rows.map(x=>x[0]),datasets:[{label:'Scans',data:rows.map(x=>x[1]),borderWidth:2}]},options:{indexAxis:'y',scales:{x:{beginAtZero:true,ticks:{precision:0}}}}});</script></body></html>
+    """, css=BASE_CSS, brand=brand_block("Scan Heatmap"), form=filter_form(user, business, "/heatmap", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "heatmap", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(available_campaigns(user, business, token)), len(available_slugs(user, business, campaign, token))), top=top, points=json_for_js(points), map_query=quote_plus(map_query))
 
 
 if __name__ == "__main__":
