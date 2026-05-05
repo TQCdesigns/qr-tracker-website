@@ -19,6 +19,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 SCAN_FILE = DATA_DIR / "scans.jsonl"
 CONVERSION_FILE = DATA_DIR / "conversions.jsonl"
+QR_FILE = DATA_DIR / "qrs.jsonl"
 GEO_CACHE_FILE = DATA_DIR / "geo_cache.json"
 
 
@@ -107,6 +108,65 @@ def save_scan(scan: dict) -> None:
 
 def save_conversion(conversion: dict) -> None:
     append_jsonl(CONVERSION_FILE, conversion)
+
+
+def load_registered_qrs() -> list[dict]:
+    return load_jsonl(QR_FILE)
+
+
+def save_registered_qrs(rows: list[dict]) -> None:
+    rewrite_jsonl(QR_FILE, rows)
+
+
+def qr_identity_key(row: dict) -> tuple[str, str, str, str, str]:
+    return (
+        clean(row.get("token")).lower(),
+        clean(row.get("user")).lower(),
+        clean(row.get("business")).lower(),
+        clean(row.get("campaign"), "default").lower(),
+        clean(row.get("slug"), "default").lower(),
+    )
+
+
+def upsert_registered_qr(qr: dict) -> dict:
+    rows = load_registered_qrs()
+    qr = dict(qr)
+    qr.setdefault("registered_at", now_iso())
+    qr["updated_at"] = now_iso()
+
+    qr_id = clean(qr.get("qr_id") or qr.get("id"))
+    new_key = qr_identity_key(qr)
+    merged: list[dict] = []
+    replaced = False
+
+    for row in rows:
+        same_id = qr_id and clean(row.get("qr_id") or row.get("id")) == qr_id
+        same_identity = qr_identity_key(row) == new_key
+        if same_id or same_identity:
+            existing = dict(row)
+            existing.update({k: v for k, v in qr.items() if v not in (None, "")})
+            if "registered_at" not in existing:
+                existing["registered_at"] = clean(row.get("registered_at"), now_iso())
+            existing["updated_at"] = qr["updated_at"]
+            merged.append(existing)
+            qr = existing
+            replaced = True
+        else:
+            merged.append(row)
+
+    if not replaced:
+        merged.append(qr)
+
+    save_registered_qrs(merged)
+    return qr
+
+
+def filtered_registered_qrs(user: str, business: str, campaign: str = "", slug: str = "", token: str = "") -> list[dict]:
+    return filtered_rows(load_registered_qrs(), user, business, campaign, slug, token)
+
+
+def registered_qr_count_by(user: str, business: str, token: str, key: str, campaign: str = "") -> list[tuple[str, int]]:
+    return count_by(filtered_registered_qrs(user, business, campaign, token=token), key, "default")
 
 
 def load_geo_cache() -> dict:
@@ -214,8 +274,8 @@ def filtered_rows(rows: list[dict], user: str, business: str, campaign: str = ""
     slug_l = clean(slug).lower()
     token_l = clean(token).lower()
 
-    # The token is treated like a private password. Dashboards/APIs should not
-    # expose any saved scan/conversion rows unless a matching token is supplied.
+    # The secure creator token keeps each creator's tracker data separated.
+    # Dashboards/APIs should not expose rows unless a matching token is supplied.
     if not token_l:
         return []
 
@@ -269,60 +329,124 @@ def json_for_js(value) -> str:
 
 
 def available_campaigns(user: str = "", business: str = "", token: str = "") -> list[str]:
-    rows = filtered_rows(load_scans(), user, business, token=token)
-    names = sorted({clean(r.get("campaign"), "default") for r in rows if clean(r.get("campaign"), "default")})
+    scan_rows = filtered_rows(load_scans(), user, business, token=token)
+    qr_rows = filtered_registered_qrs(user, business, token=token)
+    names = sorted({
+        clean(r.get("campaign"), "default")
+        for r in scan_rows + qr_rows
+        if clean(r.get("campaign"), "default")
+    })
     if "default" not in names:
         names.insert(0, "default")
     return names
 
 
 def available_slugs(user: str = "", business: str = "", campaign: str = "", token: str = "") -> list[str]:
-    rows = filtered_rows(load_scans(), user, business, campaign, token=token)
-    names = sorted({clean(r.get("slug"), "default") for r in rows if clean(r.get("slug"), "default")})
+    scan_rows = filtered_rows(load_scans(), user, business, campaign, token=token)
+    qr_rows = filtered_registered_qrs(user, business, campaign, token=token)
+    names = sorted({
+        clean(r.get("slug"), "default")
+        for r in scan_rows + qr_rows
+        if clean(r.get("slug"), "default")
+    })
     if "default" not in names:
         names.insert(0, "default")
     return names
 
 
 def qr_summary_rows(user: str = "", business: str = "", campaign: str = "", token: str = "") -> list[dict]:
+    registered = filtered_registered_qrs(user, business, campaign, token=token)
     scans = filtered_scans(user, business, campaign, token=token)
     conversions = filtered_conversions(user, business, campaign, token=token)
-    conv_by_slug = Counter(clean(c.get("slug"), "default") for c in conversions)
-    grouped: dict[str, dict] = {}
+
+    conv_by_key = Counter(
+        (clean(c.get("campaign"), "default"), clean(c.get("slug"), "default"))
+        for c in conversions
+    )
+
+    grouped: dict[tuple[str, str], dict] = {}
+
+    for qr in registered:
+        qr_campaign = clean(qr.get("campaign"), "default")
+        slug = clean(qr.get("slug"), "default")
+        key = (qr_campaign, slug)
+        grouped[key] = {
+            "id": clean(qr.get("qr_id") or qr.get("id")),
+            "qr_id": clean(qr.get("qr_id") or qr.get("id")),
+            "type": clean(qr.get("type"), "Saved QR"),
+            "slug": slug,
+            "campaign": qr_campaign,
+            "source": clean(qr.get("source"), "qr"),
+            "medium": clean(qr.get("medium"), "qr"),
+            "destination": clean(qr.get("destination")),
+            "tracked_url": clean(qr.get("tracked_url")),
+            "created": clean(qr.get("created") or qr.get("registered_at")),
+            "first_seen": clean(qr.get("first_seen") or qr.get("created") or qr.get("registered_at")),
+            "last_seen": clean(qr.get("last_seen") or qr.get("updated_at") or qr.get("created")),
+            "scans": 0,
+            "conversions": 0,
+            "conversion_rate": 0.0,
+            "top_city": "Unknown",
+            "top_device": "Unknown",
+            "registered": True,
+            "cities": Counter(),
+            "devices": Counter(),
+        }
+
     for scan in scans:
+        qr_campaign = clean(scan.get("campaign"), "default")
         slug = clean(scan.get("slug"), "default")
-        if slug not in grouped:
-            grouped[slug] = {
+        key = (qr_campaign, slug)
+        if key not in grouped:
+            grouped[key] = {
+                "id": "",
+                "qr_id": "",
+                "type": "Tracked QR",
                 "slug": slug,
-                "campaign": clean(scan.get("campaign"), "default"),
+                "campaign": qr_campaign,
                 "source": clean(scan.get("source"), "qr"),
                 "medium": clean(scan.get("medium"), "qr"),
                 "destination": clean(scan.get("destination")),
+                "tracked_url": "",
+                "created": clean(scan.get("timestamp")),
                 "first_seen": clean(scan.get("timestamp")),
                 "last_seen": clean(scan.get("timestamp")),
                 "scans": 0,
                 "conversions": 0,
+                "conversion_rate": 0.0,
+                "top_city": "Unknown",
+                "top_device": "Unknown",
+                "registered": False,
                 "cities": Counter(),
                 "devices": Counter(),
             }
-        row = grouped[slug]
+
+        row = grouped[key]
         row["scans"] += 1
+        row["source"] = row.get("source") or clean(scan.get("source"), "qr")
+        row["medium"] = row.get("medium") or clean(scan.get("medium"), "qr")
+        if not row.get("destination"):
+            row["destination"] = clean(scan.get("destination"))
         timestamp = clean(scan.get("timestamp"))
         if timestamp:
-            row["last_seen"] = max(row["last_seen"], timestamp)
-            row["first_seen"] = min(row["first_seen"], timestamp)
+            row["last_seen"] = max(clean(row.get("last_seen")), timestamp) if clean(row.get("last_seen")) else timestamp
+            row["first_seen"] = min(clean(row.get("first_seen")), timestamp) if clean(row.get("first_seen")) else timestamp
         row["cities"][clean(scan.get("city"), "Unknown")] += 1
         row["devices"][clean(scan.get("device"), "Unknown")] += 1
 
-    for slug, row in grouped.items():
-        row["conversions"] = conv_by_slug.get(slug, 0)
+    for key, row in grouped.items():
+        row["conversions"] = conv_by_key.get(key, 0)
         row["conversion_rate"] = conversion_rate(row["scans"], row["conversions"])
         row["top_city"] = row["cities"].most_common(1)[0][0] if row["cities"] else "Unknown"
         row["top_device"] = row["devices"].most_common(1)[0][0] if row["devices"] else "Unknown"
         row.pop("cities", None)
         row.pop("devices", None)
-    return sorted(grouped.values(), key=lambda x: x["scans"], reverse=True)
 
+    return sorted(
+        grouped.values(),
+        key=lambda x: (x.get("scans", 0), clean(x.get("last_seen") or x.get("created"))),
+        reverse=True,
+    )
 
 def heatmap_points(scans: list[dict]) -> list[dict]:
     grouped: dict[tuple[str, str, str], dict] = {}
@@ -402,7 +526,7 @@ def render_home_page(message: str = "", active: str = "home"):
             </div>
             <div>
                 <strong>Why is it required?</strong>
-                <p>The token works like a private password so the tracker only shows the QR codes and scans for that creator.</p>
+                <p>The secure creator token helps the tracker show only the QR codes and scans for that creator.</p>
             </div>
             <div>
                 <strong>What can I view?</strong>
@@ -421,7 +545,7 @@ def qr_track_health():
     return jsonify({
         "status": "ok",
         "tracking": True,
-        "version": "4.4-token-sync",
+        "version": "4.5-saved-qr-registry",
         "features": [
             "user filtering",
             "business filtering",
@@ -548,6 +672,47 @@ def api_campaigns():
     return jsonify({"campaigns": campaigns, "count": len(campaigns)})
 
 
+@app.post("/api/qrs/register")
+def api_register_qr():
+    payload = request.get_json(silent=True) or {}
+    user = clean(payload.get("user") or request.values.get("user"))
+    business = clean(payload.get("business") or request.values.get("business"))
+    token = clean(payload.get("token") or request.values.get("token"))
+
+    if not has_required_identity(user, business, token):
+        return jsonify({
+            "status": "error",
+            "registered": False,
+            "message": "Missing name, business name or secure creator token."
+        }), 400
+
+    incoming_qr_id = clean(payload.get("qr_id") or payload.get("id") or str(uuid.uuid4()))
+
+    qr = {
+        "id": incoming_qr_id,
+        "qr_id": incoming_qr_id,
+        "type": clean(payload.get("type"), "Saved QR"),
+        "campaign": clean(payload.get("campaign"), "default"),
+        "slug": clean(payload.get("slug"), "default"),
+        "destination": clean(payload.get("destination")),
+        "tracked_url": clean(payload.get("tracked_url")),
+        "created": clean(payload.get("created"), now_iso()),
+        "tracker_base": clean(payload.get("tracker_base")),
+        "user": user,
+        "business": business,
+        "token": token,
+        "source": clean(payload.get("source"), "qr"),
+        "medium": clean(payload.get("medium"), "qr"),
+    }
+
+    saved = upsert_registered_qr(qr)
+    return jsonify({
+        "status": "ok",
+        "registered": True,
+        "qr": saved,
+    })
+
+
 @app.get("/api/qrs")
 def api_qrs():
     user = clean(request.args.get("user"))
@@ -565,50 +730,62 @@ def api_delete_qr():
     user, business, token = request_identity()
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
+    qr_id = clean(request.values.get("qr_id"))
 
     if not has_required_identity(user, business, token):
         return jsonify({
             "status": "error",
             "deleted": False,
-            "message": "Missing name, business name or private token."
+            "message": "Missing name, business name or secure creator token."
         }), 400
 
-    if not campaign or not slug:
+    if not qr_id and (not campaign or not slug):
         return jsonify({
             "status": "error",
             "deleted": False,
-            "message": "Campaign and slug are required to delete a QR code from the tracker."
+            "message": "QR ID or campaign and slug are required to delete a QR code from the tracker."
         }), 400
 
-    def keep_row(row: dict) -> bool:
-        return not (
-            clean(row.get("token")).lower() == token.lower()
-            and clean(row.get("user")).lower() == user.lower()
-            and clean(row.get("business")).lower() == business.lower()
-            and clean(row.get("campaign"), "default").lower() == campaign.lower()
+    def identity_matches(row: dict) -> bool:
+        if clean(row.get("token")).lower() != token.lower():
+            return False
+        if clean(row.get("user")).lower() != user.lower():
+            return False
+        if clean(row.get("business")).lower() != business.lower():
+            return False
+        if qr_id and clean(row.get("qr_id") or row.get("id")) == qr_id:
+            return True
+        return (
+            clean(row.get("campaign"), "default").lower() == campaign.lower()
             and clean(row.get("slug"), "default").lower() == slug.lower()
         )
 
     scans_before = load_scans()
     conversions_before = load_conversions()
-    scans_after = [row for row in scans_before if keep_row(row)]
-    conversions_after = [row for row in conversions_before if keep_row(row)]
+    qrs_before = load_registered_qrs()
+
+    scans_after = [row for row in scans_before if not identity_matches(row)]
+    conversions_after = [row for row in conversions_before if not identity_matches(row)]
+    qrs_after = [row for row in qrs_before if not identity_matches(row)]
 
     rewrite_jsonl(SCAN_FILE, scans_after)
     rewrite_jsonl(CONVERSION_FILE, conversions_after)
+    rewrite_jsonl(QR_FILE, qrs_after)
 
     deleted_scans = len(scans_before) - len(scans_after)
     deleted_conversions = len(conversions_before) - len(conversions_after)
+    deleted_qrs = len(qrs_before) - len(qrs_after)
 
     return jsonify({
         "status": "ok",
         "deleted": True,
         "campaign": campaign,
         "slug": slug,
+        "qr_id": qr_id,
+        "deleted_saved_qrs": deleted_qrs,
         "deleted_scans": deleted_scans,
         "deleted_conversions": deleted_conversions,
     })
-
 
 @app.get("/api/summary")
 def api_summary():
@@ -618,7 +795,7 @@ def api_summary():
     slug = selected_slug_from_request()
     token = selected_token_from_request()
     if not has_required_identity(user, business, token):
-        return jsonify({"status": "missing_identity", "message": "Name, business name and private token are required."}), 401
+        return jsonify({"status": "missing_identity", "message": "Name, business name and secure creator token are required."}), 401
     scans = filtered_scans(user, business, campaign, slug, token)
     conversions = filtered_conversions(user, business, campaign, slug, token)
 
@@ -672,7 +849,7 @@ def export_csv():
     slug = selected_slug_from_request()
     token = selected_token_from_request()
     if not has_required_identity(user, business, token):
-        return render_home_page("Enter your name, business name and private token before exporting CSV data."), 401
+        return render_home_page("Enter your name, business name and secure creator token before exporting CSV data."), 401
     scans = filtered_scans(user, business, campaign, slug, token)
 
     fields = [
@@ -1021,7 +1198,7 @@ def dashboard():
 </div>
 </body>
 </html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/dashboard", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "dashboard", token), stats=stats_block(total, len(conversions), conversion_rate(total, len(conversions)), len(campaign_rows), len(slug_rows)), selected_label=selected_label, scans=scans, variant_rows=variant_rows, source_rows=source_rows, city_rows=city_rows, scores=scores, best_campaign=best_campaign, best_source=best_source, best_qr=best_qr, best_city=best_city)
+    """, css=BASE_CSS, form=filter_form(user, business, "/dashboard", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "dashboard", token), stats=stats_block(total, len(conversions), conversion_rate(total, len(conversions)), len(available_campaigns(user, business, token)), len(available_slugs(user, business, campaign, token))), selected_label=selected_label, scans=scans, variant_rows=variant_rows, source_rows=source_rows, city_rows=city_rows, scores=scores, best_campaign=best_campaign, best_source=best_source, best_qr=best_qr, best_city=best_city)
 
 
 @app.get("/qrs")
@@ -1045,7 +1222,7 @@ def qrs_page():
 <head><title>Saved QR Codes</title>{{ css | safe }}</head>
 <body>
 <div class="wrap">
-    <div class="hero"><h1>Saved QR Codes</h1><p class="muted">A clean view of every QR code currently being tracked. Open dashboard, analytics, campaign view or heatmap for each QR.</p>{{ form | safe }}{{ nav | safe }}</div>
+    <div class="hero"><h1>Saved QR Codes</h1><p class="muted">A clean view of saved and tracked QR codes. Saved QR codes can appear here before their first scan.</p>{{ form | safe }}{{ nav | safe }}</div>
     {{ stats | safe }}
     <div class="qr-card-grid">
     {% for qr in qrs %}
@@ -1061,13 +1238,13 @@ def qrs_page():
             </div>
         </div>
     {% else %}
-        <div class="card"><p class="muted">No QR scans have been recorded yet. Scan one of your saved QR codes and it will appear here.</p></div>
+        <div class="card"><p class="muted">No saved QR codes or scans have been registered yet. Save a QR from QR Studio Pro or scan a tracked QR to show it here.</p></div>
     {% endfor %}
     </div>
 </div>
 </body>
 </html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/qrs", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "qrs", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(count_by(filtered_scans(user, business, token=token), "campaign", "default")), len(qrs)), qrs=[{**q, "slug_q": quote_plus(q["slug"]), "campaign_q": quote_plus(q["campaign"])} for q in qrs], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(token))
+    """, css=BASE_CSS, form=filter_form(user, business, "/qrs", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "qrs", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(available_campaigns(user, business, token)), len(qrs)), qrs=[{**q, "slug_q": quote_plus(q["slug"]), "campaign_q": quote_plus(q["campaign"])} for q in qrs], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(token))
 
 
 @app.get("/analytics")
@@ -1079,8 +1256,9 @@ def analytics():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug, selected_token_from_request())
-    conversions = filtered_conversions(user, business, campaign, slug, selected_token_from_request())
+    token = selected_token_from_request()
+    scans = filtered_scans(user, business, campaign, slug, token)
+    conversions = filtered_conversions(user, business, campaign, slug, token)
 
     return render_template_string("""
 <!doctype html>
@@ -1109,18 +1287,19 @@ def campaigns_page():
     token = selected_token_from_request()
     all_scans = filtered_scans(user, business, token=token)
     scans = filtered_scans(user, business, campaign, slug, token)
-    conversions = filtered_conversions(user, business, campaign, slug, selected_token_from_request())
-    rows = count_by(all_scans, "campaign", "default")
+    conversions = filtered_conversions(user, business, campaign, slug, token)
+    campaign_names = available_campaigns(user, business, token)
+    rows = [(name, len(filtered_scans(user, business, name, token=token))) for name in campaign_names]
     campaign_table = []
     for name, count in rows:
         campaign_scans = filtered_scans(user, business, name, token=token)
         conv_count = len(filtered_conversions(user, business, name, token=token))
-        campaign_table.append({"name": name, "count": len(campaign_scans), "qrs": len(count_by(campaign_scans, "slug", "default")), "conversions": conv_count, "rate": conversion_rate(len(campaign_scans), conv_count)})
+        campaign_table.append({"name": name, "count": len(campaign_scans), "qrs": len(available_slugs(user, business, name, token)), "conversions": conv_count, "rate": conversion_rate(len(campaign_scans), conv_count)})
 
     return render_template_string("""
 <!doctype html>
 <html><head><title>Campaign Analytics</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Campaign Analytics</h1><p class="muted">Compare campaign groups like Melbourne, Sydney, flyer drops, events and poster runs.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>Campaign Scan Share</h2><canvas id="campaignShare"></canvas></div><div class="card"><h2>Selected Campaign Over Time</h2><canvas id="campaignTime"></canvas></div></div><div class="card"><h2>Campaign Table</h2><table><tr><th>Campaign</th><th>Scans</th><th>QR Codes</th><th>Conversions</th><th>Conversion Rate</th><th>Open</th></tr>{% for row in campaign_table %}<tr><td>{{ row.name }}</td><td>{{ row.count }}</td><td>{{ row.qrs }}</td><td>{{ row.conversions }}</td><td>{{ row.rate }}%</td><td><a class="pill" href="/campaigns?user={{ user_q }}&business={{ business_q }}&token={{ token_q }}&campaign={{ row.name_q }}">View</a></td></tr>{% else %}<tr><td colspan="6" class="muted">No campaigns yet.</td></tr>{% endfor %}</table></div></div><script>const allCampaigns={{ by_campaign|safe }}, selectedTime={{ by_day|safe }};function sortedData(obj,limit=16){return Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,limit)}function chart(id,type,label,obj){const rows=type==='line'?Object.entries(obj):sortedData(obj);new Chart(document.getElementById(id),{type,data:{labels:rows.map(x=>x[0]),datasets:[{label,data:rows.map(x=>x[1]),borderWidth:2,tension:.35,fill:type==='line'}]},options:{scales:type==='doughnut'?{}:{y:{beginAtZero:true,ticks:{precision:0}}}}})}chart('campaignShare','doughnut','Campaigns',allCampaigns);chart('campaignTime','line','Scans',selectedTime);</script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/campaigns", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "campaigns", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(rows), len(count_by(scans, "slug", "default"))), campaign_table=[{**r, "name_q": quote_plus(r["name"])} for r in campaign_table], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(selected_token_from_request()), by_campaign=json_for_js(dict(rows)), by_day=json_for_js(count_by_day(scans)))
+    """, css=BASE_CSS, form=filter_form(user, business, "/campaigns", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "campaigns", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(rows), len(available_slugs(user, business, campaign, selected_token_from_request()))), campaign_table=[{**r, "name_q": quote_plus(r["name"])} for r in campaign_table], user_q=quote_plus(user), business_q=quote_plus(business), token_q=quote_plus(selected_token_from_request()), by_campaign=json_for_js(dict(rows)), by_day=json_for_js(count_by_day(scans)))
 
 
 @app.get("/heatmap")
@@ -1132,8 +1311,9 @@ def heatmap_page():
     business = clean(request.args.get("business"))
     campaign = selected_campaign_from_request()
     slug = selected_slug_from_request()
-    scans = filtered_scans(user, business, campaign, slug, selected_token_from_request())
-    conversions = filtered_conversions(user, business, campaign, slug, selected_token_from_request())
+    token = selected_token_from_request()
+    scans = filtered_scans(user, business, campaign, slug, token)
+    conversions = filtered_conversions(user, business, campaign, slug, token)
     points = heatmap_points(scans)
     top = points[:12]
     map_query = "Australia"
@@ -1144,9 +1324,10 @@ def heatmap_page():
     return render_template_string("""
 <!doctype html>
 <html><head><title>Scan Heatmap</title>{{ css | safe }}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div class="wrap"><div class="hero"><h1>Scan Heatmap</h1><p class="muted">Location-based scan grouping by city, region and country. IP locations are approximate.</p>{{ form | safe }}{{ nav | safe }}</div>{{ stats | safe }}<div class="grid2"><div class="card"><h2>City Heat Chart</h2><canvas id="cityHeat"></canvas></div><div class="card"><h2>Map Preview</h2><div class="map-frame"><iframe loading="lazy" src="https://maps.google.com/maps?q={{ map_query }}&output=embed"></iframe></div></div></div><div class="card"><h2>Top Location Heat Cells</h2><div class="heatmap-grid">{% for p in top %}<div class="heat-cell"><strong>{{ p.count }}</strong><span class="muted">{{ p.city }}{% if p.region %}, {{ p.region }}{% endif %}<br>{{ p.country }}</span></div>{% else %}<p class="muted">No location data yet.</p>{% endfor %}</div></div></div><script>const points={{ points|safe }};const cityCounts={};points.forEach(p=>{cityCounts[`${p.city}, ${p.country}`]=p.count});const rows=Object.entries(cityCounts).sort((a,b)=>b[1]-a[1]).slice(0,16);new Chart(document.getElementById('cityHeat'),{type:'bar',data:{labels:rows.map(x=>x[0]),datasets:[{label:'Scans',data:rows.map(x=>x[1]),borderWidth:2}]},options:{indexAxis:'y',scales:{x:{beginAtZero:true,ticks:{precision:0}}}}});</script></body></html>
-    """, css=BASE_CSS, form=filter_form(user, business, "/heatmap", campaign, slug, selected_token_from_request()), nav=nav_links(user, business, campaign, slug, "heatmap", selected_token_from_request()), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(count_by(filtered_scans(user, business, token=token), "campaign", "default")), len(count_by(scans, "slug", "default"))), top=top, points=json_for_js(points), map_query=quote_plus(map_query))
+    """, css=BASE_CSS, form=filter_form(user, business, "/heatmap", campaign, slug, token), nav=nav_links(user, business, campaign, slug, "heatmap", token), stats=stats_block(len(scans), len(conversions), conversion_rate(len(scans), len(conversions)), len(available_campaigns(user, business, token)), len(available_slugs(user, business, campaign, token))), top=top, points=json_for_js(points), map_query=quote_plus(map_query))
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+
